@@ -60,7 +60,7 @@ endm draw_obstacle
 ; draw the boeder of the mab and obstacles
 ;input player1name , player2name  as array of bytes  (includeing the max size and actual size as the first 2 bytes)
 
-drawmap macro player1name,player2name,color
+drawmap macro player1name,player2name,color,statusbar
 
 mov drxmin,0d
 mov drxmax,320d
@@ -71,7 +71,7 @@ mov drcolor,color
 call drawrect
 
 mov cx,fightmapymax
-add cx,9d
+add cx,10d
 mov drxmin,0d
 mov drxmax,320d
 mov drymin,cx
@@ -107,21 +107,44 @@ call drawrect
 mov drxmin,159d
 mov drxmax,159d
 mov drymin,160d
-mov drymax,200d
+mov drymax,191d
 mov drcolor,color
 
 call drawrect
 
+mov drxmin,0d
+mov drxmax,320d
+mov drymin,191d
+mov drymax,191d
+mov drcolor,color
 
-movecursor 0d,20d
+call drawrect
+
+local player2
+local end
+
+
+cmp playerRole,0
+jnz player2
+movecursor 0d,19d
 displaystring player1name+2
-movecursor 20d,20d
+movecursor 20d,19d
 displaystring player2name+2
+jmp end
 
+player2:
+movecursor 0d,19d
+displaystring player2name+2
+movecursor 20d,19d
+displaystring player1name+2
+
+end:
+
+movecursor 10d,24d
+displaystring statusbar
 
 
 endm
-
 
 
 

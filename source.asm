@@ -1,7 +1,8 @@
 include drawingfighter.inc
-include drawingline.inc
+include drawingline.inc 
 include welcomeScreen.inc
 include drawingobst.inc
+
 
 waitMicroSeconds macro highWord,lowWord
 push cx
@@ -71,10 +72,17 @@ Fire macro bullets,x,y,dir
  pop bx
         
 Fire endm        
-       
+
+
+
+     
 .model small 
 .stack 64
 .data
+
+
+ingamechat db 0
+
 
 ;---------------------- ; parameters to macros and procedures
 
@@ -84,7 +92,9 @@ drYmin dw 0d
 drYmax dw 10d
 drColor db 14d
 
-temp1B db ?
+temp1B db ?  
+
+byte   db ?
 
 ;----------------------; Golbal variables for the game
 roundStatus DW 0 ; {0:inPlay, 1:player 1 win, 2:player2 win}
@@ -93,6 +103,21 @@ roundNum equ 9   ; the number of rounds per game
 
 roundCount db 0  ; the current round players play (0:8)
 
+
+;-----------------------------------------------------------------------------------------hosting and client
+PlayerRole DB 3 ; 0:host, 1:client
+Player2CurrReauest DB 0 ; 0:no request, 1:request to play, 2:request to chat == 1:accept,2:refuse,3"requestPlay,4:requesChat
+acceptPlay equ 1d  ; these equs is used directly outed from guest and received from host to know that the other is accept 
+acceptChat equ 7d
+refuse equ 2d
+requestPlay equ 3d ; these variable moved to currRequest 
+requestChat equ 4d
+;------------------------------------------------------------------------------------------------------
+     
+; 80*25 chars
+cursor1 Db 1,2
+cursor2 Db 1,14d    
+     
 ;----------------------- ;fighter 1 information
 fighter1Xmin dw 11d
 fighter1Xmax dw 10d
@@ -109,6 +134,7 @@ fighter1newymin dw 0d
 fighter1hiddes  db Numofhiddes 
 fighter1IsNowHidden db  0d   ;  0:not Hidden 1:isHidden  
 fighter1HideTime    db  0d,0d       ; min and sec
+fighter1moves  db numofmoves
 ;------------------------; fighter2 information
 fighter2Xmin dw 0d
 fighter2Xmax dw 309d
@@ -126,7 +152,7 @@ fighter2newymin dw 0d
 fighter2hiddes  db numofhiddes 
 fighter2IsNowHidden db  0d   ;  0:not Hidden 1:isHidden 
 fighter2HideTime    db  0d,0d
-
+fighter2moves  db numofmoves
 ;---------------------  scan codes
 upsc   equ  48h
 downsc equ  50h
@@ -165,7 +191,7 @@ ChngBulletMode_sc2 equ 4Dh    ; right arrow or left arrow
 fightmapxmin  equ  0d
 fightmapymin  equ  9d
 fightmapxmax  equ  320d
-fightmapymax  equ  159d
+fightmapymax  equ  150d
 fighter1part  equ  120d
 fighter2part  equ  200d
 
@@ -181,11 +207,25 @@ mesChoice1 db "*To start chatting Press F1",'$'
 mesChoice2 db "*To start GunFight game Press F2",'$'
 mesChoice3 db "*To end the Program Press ESC",'$'
 mesChoiceDiff db "difficulty(",24d,',',25d,')','$'
-mesChoiceMode db "Bullet Mode(",26d,",",27d,")",'$'
+mesChoiceMode db "Bullet Mode(",26d,",",27d,")",'$' 
+wrongname db "name must begin by character",'$'
+statusbar db "-- press escape to exit","$"  
+level2msg db "level",'$'
+sendGameinvationMs db "you send a game invitation",'$'
+sendchatinvationMs db "you send a chat invitation",'$'
+recGameinvationMs db "game invitation, f2 to accept$"
+recChatinvationMs db "chat invitation, f1 to accept",'$'
+
+
 
 
 gameDifficltuy db 1+3      ; init with default value to be seen first in the screen(increase this value to speedFactor)
 BulletMode db 0     ;0:translation      ;1:bounding
+
+level2     db 0       
+level2sc   equ 42h ; f8 
+numofmoves equ 5d
+
 maxNumBullets   equ  3   ; maximum number of bullets in the screen of each player
 
 obstColor   equ  0Ah    
@@ -226,21 +266,26 @@ main proc far
      mov ah,0
      mov al,13h
      int 10h
-        
+     
+     call initPort   
      call getusername   ; get users name in different screens
      
 MainProgram:
-  ; draw the main screen tp get a choice
-  mainscreen meschoice1,meschoice2,meschoice3,mesChoiceDiff,gameDifficltuy,mesChoiceMode,BulletMode 
+ 
+  ; draw the main screen to get a choice
+  mainscreen meschoice1,meschoice2,meschoice3,mesChoiceDiff,gameDifficltuy,mesChoiceMode,BulletMode,level2,level2msg
+
+  call ifRequestToPlay ; check if the other player request to play (the proc will handle every thing if yes)
+
   mov ah,1
   int 16h
   jz MainProgram
      
   ;clear the buffer
-  push ax
-  mov ah,0
-  int 16h
-  pop ax
+   push ax
+   mov ah,0
+   int 16h
+   pop ax
   
      cmp ah,F1Sc
      jz IsF1
@@ -260,36 +305,91 @@ MainProgram:
      cmp ah,ChngBulletMode_sc
      jz IsChngBulletMode
      cmp ah,ChngBulletMode_sc2
-     jz IsChngBulletMode
+     jz IsChngBulletMode 
+     
+     cmp ah,level2sc
+     jz setlevel2
      
      ; it is not a key of our action keys, so ignore it and ret    
-     jmp MainProgram
+       jmp MainProgram
      
       
       
      IsF1:
-           ;for now, do nothing 
-           jmp mainProgram  
+           ; send a new request to chat, or accept if there is invitation
+           cmp Player2CurrReauest,requestchat
+           jz IsF1_confirmRequest
+           jmp IsF1_invitePlay
+           
+           IsF1_invitePlay:
+                      mov al,requestchat
+                      IsF1_main_loopTillEmpty:
+                      call isTransmitterRegHoldData
+                      jz IsF1_main_loopTillEmpty 
+                      call outValue
+                      mov playerrole,0 ; request
+                      movecursor 2,20d 
+                      displaystring sendchatinvationMs
+                      jmp MainProgram
+                                                                                                     ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+           IsF1_confirmRequest:
+                      mov al,acceptchat
+                      IsF1_main_loopTillEmpty2:
+                      call isTransmitterRegHoldData
+                      jz IsF1_main_loopTillEmpty2   
+                      call outValue
+                      mov playerRole,1  ; reciever
+                 
+                      call chat
+                                
+             jmp MainProgram  
            
      IsF2:
-           ; run a new game 
-           call GunFight
-           jmp MainProgram
+           ; send a new request to play, or accept if there is invitation
+           cmp Player2CurrReauest,requestPlay
+           jz IsF2_confirmRequest
+           jmp IsF2_invitePlay
+           
+           IsF2_invitePlay:
+                      mov al,requestPlay
+                      main_loopTillEmpty:
+                      call isTransmitterRegHoldData
+                      jz main_loopTillEmpty 
+                      call outValue
+                      mov playerrole,0 ; request
+                      movecursor 2,20d
+                      displaystring sendgameinvationMs
+                      jmp MainProgram
+                      
+           IsF2_confirmRequest:
+                      mov al,acceptplay
+                      IsF2_main_loopTillEmpty2:
+                      call isTransmitterRegHoldData
+                      jz IsF2_main_loopTillEmpty2    
+                      call outValue
+                      mov playerRole,1  ; reciever
+                 
+                      call gunfight          
+             jmp MainProgram
           
      
      IsIncDiff:      
            call increaseDifficluty           
-           jmp Mainprogram
+            jmp MainProgram
            
      IsDecDiff:      
            call decreaseDifficluty                      
-           jmp Mainprogram
+            jmp MainProgram
            
            
            
      IsChngBulletMode:                                 
            not BulletMode ; for now
-           jmp Mainprogram
+            jmp MainProgram 
+           
+     setlevel2:
+           xor level2,00000001b
+            jmp MainProgram 
                       
                 
      IsESc: 
@@ -299,7 +399,9 @@ MainProgram:
            mov	ax,4c00h
 	       int	21h					; Call DOS interrupt 21h  to return to operating system      
               
-      HLT
+      HLT    
+     
+     
 main endp 
 
 
@@ -502,6 +604,22 @@ endp
 movplayer1 proc 
       
      push cx  
+          
+        mov cl,level2
+          
+        cmp  cl,1
+             jz   moveplayer1_level2
+             jmp  moveplayer1_level1
+          
+        moveplayer1_level2:
+         
+               cmp fighter1moves,0
+               jz  player1moved
+               dec fighter1moves
+             
+               
+       
+        moveplayer1_level1:
         
         ; first check if the new coordinates not valid
         mov cx,fighter1newxmin
@@ -582,6 +700,22 @@ endp
 movplayer2 proc 
       
      push cx  
+             
+        ; first check if we in level 2   (player have #number of moves)
+        mov cl,level2
+        
+        cmp  cl,1
+        jz   moveplayer2_level2
+        jmp  moveplayer2_level1
+          
+        moveplayer2_level2:
+               cmp fighter2moves,0
+               jz  player2moved
+               dec fighter2moves
+               
+               
+       
+        moveplayer2_level1:
         
         ; first check if the new coordinates not valid
         mov cx,fighter2newxmax
@@ -659,6 +793,7 @@ movplayer2 proc
      ret
 endp
  
+
 
 
 ;----------------------------------------------------------------------------------------------- 
@@ -762,7 +897,10 @@ changefighter2gun proc
 endp   
 
 
+    
 
+     
+ 
 ;----------------------------------------------------
 ; changes fighter 1 parameter to hide mode
 HideFighter1  proc 
@@ -864,6 +1002,10 @@ endp
 
 
 
+     
+
+
+
 ;; [A] my opinion: make the main handle if there is an input, if there call this function and execute only the (sub or add) then retrun then call a function that redraw the players with these new info
 
 ;--------------------------------------------------------------------------------------------------
@@ -881,187 +1023,13 @@ getAndExeUserAction proc
     int 16h
     pop ax
     
-    
-    cmp ah,upsc
-    jz IsUp
-    
-    cmp ah,downsc
-    jz IsDown
-    
-    cmp ah,rightsc
-    jz IsRight
-    
-    cmp ah,leftsc
-    jz isLeft
-    
-    cmp ah,fighter1NormalGunSc
-    jz isfighter1mod0
-    
-    cmp ah,fighter1DownGunSc
-    jz isfighter1mod1
-    
-    cmp ah,fighter1UpGunSc
-    jz isfighter1mod2
-    
-    cmp ah,spcSc
-    jz isF1Fire   
-    
-    cmp ah,fighter1hidesc
-    jz ishidefighter1 
-    
-    ;;;;;;; P2  ;;;;;;;;
-    cmp ah,Wsc
-    jz IsW
-    
-    cmp ah,Ssc
-    jz IsS
-    
-    cmp ah,Dsc
-    jz IsD
-    
-    cmp ah,Asc
-    jz IsA
-    
-    cmp ah,fighter2NormalGunSc
-    jz isfighter2mod0
-    
-    cmp ah,fighter2DownGunSc
-    jz isfighter2mod1
-    
-    cmp ah,fighter2UpGunSc
-    jz isfighter2mod2
-    
-    cmp ah,ctrlSc
-    jz isF2Fire 
+    mov al,ah
+    call outValue
     
     
-    cmp ah,fighter2hidesc
-    jz ishidefighter2
+    call ExecuteToPlayerRole
     
-    
-;    cmp ah,ESCSc
-;    jz mainprogram
-    ; the cliciked button is not one of our action buttons, end
-    jmp getAndExeUserAction_theEnd
-    
-    
-    
-    IsUp: 
-    sub fighter1newymin,5d
-    call movplayer1    
-    jmp getAndExeUserAction_theEnd
-    
-    IsDown:
-    add fighter1newymin,5d
-    call movplayer1
-    jmp getAndExeUserAction_theEnd
-    
-    IsRight:
-    add fighter1newxmin,5d
-    call movplayer1
-    jmp getAndExeUserAction_theEnd
-    
-    isLeft:
-    sub fighter1newxmin,5d
-    call movplayer1
-    jmp getAndExeUserAction_theEnd
-    
-    IsW:
-    sub fighter2newymin,5d
-    call movplayer2
-    jmp getAndExeUserAction_theEnd
-    
-    IsS:
-    add fighter2newymin,5d
-    call movplayer2
-    jmp getAndExeUserAction_theEnd
-    
-    IsD:
-    add fighter2newxmax,5d
-    call movplayer2
-    jmp getAndExeUserAction_theEnd
-    
-    isA:
-    sub fighter2newxmax,5d
-    call movplayer2
-    jmp getAndExeUserAction_theEnd
-    
-    isfighter1mod0:
-    mov fighter1mode,0
-    call changefighter1gun
-    jmp getAndExeUserAction_theEnd
-    
-    isfighter1mod1:
-    mov fighter1mode,2
-    call changefighter1gun
-    jmp getAndExeUserAction_theEnd
-    
-    isfighter1mod2:
-    mov fighter1mode,4
-    call changefighter1gun
-    jmp getAndExeUserAction_theEnd
-    
-    isfighter2mod0:
-    mov fighter2mode,1
-    call changefighter2gun
-    jmp getAndExeUserAction_theEnd
-    
-    isfighter2mod1:
-    mov fighter2mode,3
-    call changefighter2gun
-    jmp getAndExeUserAction_theEnd
-    
-    isfighter2mod2:
-    mov fighter2mode,5
-    call changefighter2gun
-    jmp getAndExeUserAction_theEnd
-    
-    
-    isF1Fire:
-        ; dont fire if his maxNumBullets bullets still on the screen
-        cmp P1bulletsFired,maxNumBullets
-        jz getAndExeUserAction_theEnd
-        ; dont fire if he dont have remain bullets
-        cmp P1RemainBullets,0
-        jz getAndExeUserAction_theEnd
-        ; dont fire if he is hide
-        and fighter1IsNowHidden,1
-        jnz getAndExeUserAction_theEnd
         
-        ; execute the fire actino
-        fire P1bulletsFired[2],fighter1gunx,fighter1guny,fighter1mode
-        inc P1bulletsFired
-        dec P1RemainBullets
-    jmp getAndExeUserAction_theEnd
-     
-     
-    isF2Fire:
-        cmp P2bulletsFired,3d
-        jz getAndExeUserAction_theEnd
-        cmp P2RemainBullets,0
-        jz getAndExeUserAction_theEnd
-        and fighter2IsNowHidden,1
-        jnz getAndExeUserAction_theEnd
-                
-        ; execute the fire actino
-        fire P2bulletsFired[2],fighter2gunx,fighter2guny,fighter2mode
-        inc P2bulletsFired
-        dec P2RemainBullets
-   jmp getAndExeUserAction_theEnd 
-    
-    
-
-   IsHidefighter1:          ;
-               call HideFighter1
-               call movplayer1
-               jmp getAndExeUserAction_theEnd 
-
-   IsHideFighter2:
-               call HideFighter2
-               call movplayer2
-               jmp getAndExeUserAction_theEnd 
-
-    
 getAndExeUserAction_theEnd:
 ;    mov ah,0
 ;    int 16h
@@ -1072,16 +1040,19 @@ endp
 getusername proc           ; to get user names in different screens
 
 
-getUserNameScreen mesenter,mesPress,player1name
+getUserNameScreen mesenter,mesPress,player1name,wrongname
 
 mov ah,0
 mov al,13h  ; changing the video mode is faster than clearing the screen pixel pixel
 int 10h
 
-getUserNameScreen mesenter,mesPress,player2name
+;getUserNameScreen mesenter,mesPress,player2name,wrongname
 
 ret
 endp
+
+
+
 
 
 ;-------------------------------------------------------------------
@@ -1098,7 +1069,7 @@ call drawscreen
  
 mov fighter1Xmin, 11d
 mov fighter1Xmax, 10d
-mov fighter1Ymin, 100d
+mov fighter1Ymin, 90d
 mov fighter1Ymax, 300d      
 mov fighter1mode, 0d
 mov fighter1newxmin, 0d
@@ -1109,7 +1080,7 @@ mov fighter1IsNowHidden,0d
 ; two
 mov fighter2Xmin ,0d
 mov fighter2Xmax ,309d
-mov fighter2Ymin ,100d
+mov fighter2Ymin ,90d
 mov fighter2Ymax ,300d     
 mov fighter2mode , 1d     
 mov fighter2newxmax , 0d
@@ -1182,6 +1153,68 @@ endp
 ;--------------------------------------------------
 
 newGame proc 
+   ; first set the game conditions (recieve it if guest, send it if host)
+   cmp playerrole,0
+   jz newGame_sendConditions1
+   
+   
+   
+   ; recieve conditions
+   newGame_recConditions1:
+   call isDataNotReady
+   jz newGame_recConditions1
+   call invalue
+   mov gameDifficltuy,al
+   
+   newGame_recConditions2:
+   call isDataNotReady
+   jz newGame_recConditions2
+   call invalue
+   mov speedFactor,al
+   
+   newGame_recConditions3:
+   call isDataNotReady
+   jz newGame_recConditions3
+   call invalue
+   mov BulletMode,al
+   
+   newGame_recConditions4:
+   call isDataNotReady
+   jz newGame_recConditions4
+   call invalue
+   mov level2,al       
+   
+   jmp newGame_cont
+   
+   
+   
+   newGame_sendConditions1:
+   call isTransmitterRegHoldData
+   jz newGame_sendConditions1
+   mov al,gameDifficltuy
+   call outvalue
+   
+   newGame_sendConditions2:
+   call isTransmitterRegHoldData
+   jz newGame_sendConditions2
+   mov al,speedFactor
+   call outvalue
+
+   newGame_sendConditions3:
+   call isTransmitterRegHoldData
+   jz newGame_sendConditions3
+   mov al,BulletMode
+   call outvalue
+   
+   newGame_sendConditions4:
+   call isTransmitterRegHoldData
+   jz newGame_sendConditions4
+   mov al,level2
+   call outvalue
+   
+   
+         
+   newGame_cont:
                
    mov player1Score, 0d;
    mov player2Score, 0d;
@@ -1190,18 +1223,22 @@ newGame proc
    mov roundCount, 0 
    
    mov fighter2hiddes,numOfhiddes 
-   mov fighter1hiddes,numOfhiddes
+   mov fighter1hiddes,numOfhiddes   
+   
+   mov fighter1moves,numofmoves
+   mov fighter2moves,numofmoves
+   
    
    ret            
 endp
 
 
 drawscreen proc
-    drawmap player1name,player2name,bordercolor 
+    drawmap player1name,player2name,bordercolor,statusbar 
 
     draw_obstacle  160d-3*obstscale,50d,obstColor       ; 84d-60d
     draw_obstacle  160d-3*obstscale,90d,obstColor       ; 84d-60d        
-    draw_obstacle  160d-3*obstscale,150d,obstColor      ;84d-60d+20d
+    draw_obstacle  160d-3*obstscale,140d,obstColor      ;84d-60d+20d
     
 ret    
 drawscreen endp
@@ -1695,12 +1732,12 @@ push dx
     
     mov ah,2
     
-    movecursor 18d,20d
+    movecursor 18d,19d
     mov dl,player1Score
     add dl,48d
     int 21h
     
-    movecursor 38d,20d
+    movecursor 38d,19d
     mov dl,player2Score
     add dl,48d   
     int 21h
@@ -1711,6 +1748,7 @@ pop dx
 pop ax
 ret    
 endp
+
 
 
 
@@ -1727,7 +1765,10 @@ printRoundCount proc
     ; to ascii
     add dl,48d
     mov ah,2
-    int 21h
+    int 21h  
+    
+    
+    
 
 
 pop dx       
@@ -1737,12 +1778,32 @@ endp
 
 
 printRemainBullets proc
+    
+    pusha 
+    
+    
     movecursor 1,0
     printnumber P1RemainBullets
     
     movecursor 38d,0d
     printnumber P2RemainBullets
     
+    mov al,fighter1moves 
+    mov ah,0d
+    mov bl,5
+    mov byte,bl
+     
+    call printByte  
+    
+    mov al,fighter2moves 
+    mov ah,0d
+    mov bl,32
+    mov byte,bl
+     
+    call printByte  
+    
+   
+   popa 
     
 ret    
 printRemainBullets endp
@@ -1819,17 +1880,33 @@ push ax
     ; draw, display here draw message in the future
     jmp printWinner_end
     
-    printWinner_P1:
-    displaystring player1name[2]
-    jmp printWinner_end
-    
+    printWinner_P1:  
+     
+    cmp playerrole,0
+    jnz p1_role1
+               displaystring player1name[2]
+               jmp printWinner_end
+     p1_role1:
+               displaystring player2name[2]
+               jmp printWinner_end
+                   
+                   
     printWinner_P2:
-    displaystring player2name[2]
-      
+    cmp playerrole,0
+    jnz p2_role1
+          displaystring player2name[2]
+          jmp printWinner_end
+      p2_role1:
+          displaystring player1name[2] 
+                   
+                   
+                   
 printWinner_end:              
 pop ax    
 ret    
 endp printWinner
+
+
 
 
 
@@ -1863,8 +1940,11 @@ decreaseDifficluty endp
 
 
 ; simulate one game with whole process
-GunFight Proc 
-    call newgame  ;init new game
+GunFight Proc
+
+   
+    call newgame  ;init new game    
+    call get_recieve_name
     
     ; game loop every loop of this mean new round
     GunFight_game:
@@ -1878,14 +1958,20 @@ GunFight Proc
             call printRemainHide
             
             getCurrentTime GameCurrentTime[0],GameCurrentTime[1],GameCurrentTime[2]
-            call getAndExeUserAction ; get user input and exute the actiom
+            
+            call getAndExeUserAction ; get user input and exute the action
+            call recieveDataExecutable ; get other user input and execute it
+            
             call checkonhidetime
             call drawBullets
-            call checkOnMoveBulletTime   
-            
+            call checkOnMoveBulletTime  
+        
+        call isMovesEnd
+        jz  Gunfight_end    
             
         call isRoundRun
-        jz GunFight_round   
+        jz GunFight_round
+        ;jmp GunFight_round   
         
         call updateScore       ; update the new value
         call printScore        ; print the score to the players
@@ -1893,17 +1979,17 @@ GunFight Proc
         
     inc roundCount    
     call isGameEnd   
-    jnz GunFight_game    
-
-; after game is end, print the winner name    
+    jnz GunFight_game  
+      
+Gunfight_end:
+; clear the screen and return to the main program 
 call printWinner
-waitMicroSeconds 01Eh,8480h ; wait 2 seconds
-
-; clear the screen and return to the main program
-chngeToVedioMode      
+waitMicroSeconds 01Eh,8480h ; wait 2 seconds  
+call inimain
+chngeToVedioMode 
+     
 ret 
 endp GunFight  
-       
        
        
        
@@ -1952,4 +2038,915 @@ ret
 endp checkOnMoveBulletTime
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+
+
+
+
+
+
+
+;######################################################################################################### 
+ifRequestToPlay proc
+push ax    
+   call isDataNotReady 
+   jz ifRequestToPlay_theend
+   
+   call inValue 
+   
+   mov Player2CurrReauest,al
+
+;   cmp al,3d
+;   jz  player1_sendReq
+;   jmp ifRequestToPlay_theEnd
+;   player1_sendReq:
+;   mov playerrole,1
+;   jmp ifRequestToPlay_theEnd:
+
+   cmp al,acceptPlay
+   jz callGame
+   cmp al,acceptChat
+   jz callChat
+   jmp ifRequestToPlay_theEnd
+   
+   
+   callGame:
+   call gunfight
+   jmp ifRequestToPlay_theEnd
+   
+   
+   callChat:
+   call chat   
+   jmp ifRequestToPlay_theEnd   
+ 
+   
+;   ; set ZF
+;   mov ah,0
+;   cmp ah,0
+;   pop ax
+;   ret
+    
+ifRequestToPlay_theEnd:
+;; clear the ZF
+;mov ah,1
+;cmp ah,1
+
+pop ax    
+ret   
+ifRequestToPlay endp     
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+
+initPort proc   
+push ax
+push dx
+    ;Set Divisor Latch Access Bit
+        mov dx,3fbh 			; Line Control Register
+        mov al,10000000b		;Set Divisor Latch Access Bit
+        out dx,al			;Out it 
+        
+        
+    ;Set LSB byte of the Baud Rate Divisor Latch register.
+        mov dx,3f8h			
+        mov al,0ch			
+        out dx,al
+        
+        
+    ;Set MSB byte of the Baud Rate Divisor Latch register.
+        mov dx,3f9h
+        mov al,00h
+        out dx,al
+        
+    ;Set port configuration
+        mov dx,3fbh
+        mov al,00011011b
+            ;0:Access to Receiver buffer, Transmitter buffer
+            ;0:Set Break disabled
+            ;011:Even Parity
+            ;0:One Stop Bit
+            ;11:8bits
+    out dx,al
+    
+pop dx
+pop ax
+ret 
+initPort endp    
+
+
+
+
+isTransmitterRegHoldData proc
+push ax
+push dx    
+    mov dx, 3FDH		; Line Status Register
+    
+    In al, dx 			;Read Line Status
+  	AND al, 00100000b
+pop dx
+pop ax
+ret 	    
+isTransmitterRegHoldData endp    
+
+
+
+outValue proc ; take from al
+push dx
+    mov dx , 3F8H		; Transmit data register
+    out dx , al
+pop dx
+ret     
+outValue endp
+
+
+
+;Check that Data Ready
+isDataNotReady proc near
+push dx
+push ax
+    mov dx , 3FDH		; Line Status Register
+    in al , dx 
+    AND al , 1
+    ;jz again
+pop ax
+pop dx
+ret
+isDataNotReady endp
+
+
+
+
+
+
+inValue proc  ; ret in al
+push dx
+    mov dx , 03F8H
+    in al , dx 
+pop dx
+ret     
+inValue endp
+
+
+
+
+
+
+recieveDataExecutable proc
+push ax
+     call isDataNotReady
+     jz recieveDataExecutable_theEnd
+     
+    call inValue
+    mov ah,al
+    
+    ; negate the playerRole with formula playerRole = 1 - PlayerRole
+    mov al,1
+    sub al,playerRole
+    mov playerRole,al
+     
+    call ExecuteToPlayerRole
+      
+    ; return back the playerRole with formula playerRole = 1 - PlayerRole
+    mov al,1
+    sub al,playerRole
+    mov playerRole,al
+recieveDataExecutable_theEnd:    
+pop ax   
+ret    
+recieveDataExecutable endp    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ExecuteToPlayerRole proc
+     
+         
+    cmp ah,upsc
+    jz ExecuteToPlayerRole_IsUp
+    
+    cmp ah,downsc
+    jz ExecuteToPlayerRole_IsDown
+    
+    cmp ah,rightsc
+    jz ExecuteToPlayerRole_IsRight
+    
+    cmp ah,leftsc
+    jz ExecuteToPlayerRole_isLeft
+    
+    cmp ah,fighter1NormalGunSc
+    jz ExecuteToPlayerRole_isfighter1mod0
+    
+    cmp ah,fighter1DownGunSc
+    jz ExecuteToPlayerRole_isfighter1mod1
+    
+    cmp ah,fighter1UpGunSc
+    jz ExecuteToPlayerRole_isfighter1mod2
+    
+
+    cmp ah,spcSc
+    jz ExecuteToPlayerRole_isF1Fire   
+    
+    cmp ah,fighter1hidesc
+    jz ExecuteToPlayerRole_ishidefighter1
+    
+    
+    cmp ah,ESCSc
+    jz ExecuteToPlayerRole_isEsc
+     ;the cliciked button is not one of our action buttons, end
+    jmp recieveDataExecutable_theEnd
+    
+    
+      ExecuteToPlayerRole_isEsc:
+      chngeToVedioMode   
+      call inimain
+      jmp  MainProgram
+    
+    
+    
+    ExecuteToPlayerRole_IsUp:
+        cmp PlayerRole,1
+        jz  ExecuteToPlayerRole_IsW
+        sub fighter1newymin,5d
+        call movplayer1    
+    jmp ExecuteToPlayerRole_theEnd
+    
+    ExecuteToPlayerRole_IsDown:
+        cmp PlayerRole,1
+        jz  ExecuteToPlayerRole_IsS    
+        add fighter1newymin,5d
+        call movplayer1
+    jmp ExecuteToPlayerRole_theEnd
+    
+    ExecuteToPlayerRole_IsRight:
+        cmp PlayerRole,1
+        jz  ExecuteToPlayerRole_IsD    
+        add fighter1newxmin,5d
+        call movplayer1
+    jmp ExecuteToPlayerRole_theEnd
+    
+    ExecuteToPlayerRole_isLeft:
+        cmp PlayerRole,1
+        jz  ExecuteToPlayerRole_isA    
+        sub fighter1newxmin,5d
+        call movplayer1
+    jmp ExecuteToPlayerRole_theEnd
+    
+    
+    ExecuteToPlayerRole_isfighter1mod0:
+        cmp PlayerRole,1
+        jz  ExecuteToPlayerRole_isfighter2mod0    
+        mov  fighter1mode,0
+        call changefighter1gun
+    jmp ExecuteToPlayerRole_theEnd
+    
+    ExecuteToPlayerRole_isfighter1mod1:
+        cmp PlayerRole,1
+        jz  ExecuteToPlayerRole_isfighter2mod1    
+        mov fighter1mode,2
+        call changefighter1gun
+    jmp ExecuteToPlayerRole_theEnd
+    
+    ExecuteToPlayerRole_isfighter1mod2:
+        cmp PlayerRole,1
+        jz  ExecuteToPlayerRole_isfighter2mod2    
+        mov fighter1mode,4
+        call changefighter1gun
+    jmp ExecuteToPlayerRole_theEnd
+ 
+    ExecuteToPlayerRole_isF1Fire:    
+        cmp PlayerRole,1
+        jz  ExecuteToPlayerRole_isF2Fire
+        ; dont fire if his maxNumBullets bullets still on the screen
+        cmp P1bulletsFired,maxNumBullets
+        jz ExecuteToPlayerRole_theEnd
+        ; dont fire if he dont have remain bullets
+        cmp P1RemainBullets,0
+        jz ExecuteToPlayerRole_theEnd
+        ; dont fire if he is hide
+        and fighter1IsNowHidden,1
+        jnz ExecuteToPlayerRole_theEnd
+        
+        ; execute the fire actino
+        fire P1bulletsFired[2],fighter1gunx,fighter1guny,fighter1mode
+        inc P1bulletsFired
+        dec P1RemainBullets
+    jmp ExecuteToPlayerRole_theEnd
+     
+
+   ExecuteToPlayerRole_IsHidefighter1:
+        cmp PlayerRole,1
+        jz  ExecuteToPlayerRole_IsHidefighter2   
+        call HideFighter1
+        call movplayer1
+   jmp ExecuteToPlayerRole_theEnd 
+   
+   
+   
+      
+    ExecuteToPlayerRole_IsW:
+        sub fighter2newymin,5d
+        call movplayer2
+    jmp ExecuteToPlayerRole_theEnd
+    
+    ExecuteToPlayerRole_IsS:
+        add fighter2newymin,5d
+        call movplayer2
+    jmp ExecuteToPlayerRole_theEnd
+    
+    ExecuteToPlayerRole_IsD:
+        add fighter2newxmax,5d
+        call movplayer2
+    jmp ExecuteToPlayerRole_theEnd
+    
+    ExecuteToPlayerRole_isA:
+        sub fighter2newxmax,5d
+        call movplayer2
+    jmp ExecuteToPlayerRole_theEnd
+    
+    ExecuteToPlayerRole_isfighter2mod0:
+        mov fighter2mode,1
+        call changefighter2gun
+    jmp ExecuteToPlayerRole_theEnd
+    
+    ExecuteToPlayerRole_isfighter2mod1:
+        mov fighter2mode,3
+        call changefighter2gun
+    jmp ExecuteToPlayerRole_theEnd
+    
+    ExecuteToPlayerRole_isfighter2mod2:
+        mov fighter2mode,5
+        call changefighter2gun
+    jmp ExecuteToPlayerRole_theEnd
+    
+    
+      
+    ExecuteToPlayerRole_isF2Fire:
+        cmp P2bulletsFired,3d
+        jz ExecuteToPlayerRole_theEnd
+        cmp P2RemainBullets,0
+        jz ExecuteToPlayerRole_theEnd
+        and fighter2IsNowHidden,1
+        jnz ExecuteToPlayerRole_theEnd
+                
+        ; execute the fire actino
+        fire P2bulletsFired[2],fighter2gunx,fighter2guny,fighter2mode
+        inc P2bulletsFired
+        dec P2RemainBullets
+   jmp ExecuteToPlayerRole_theEnd 
+   
+   
+    ExecuteToPlayerRole_IsHideFighter2:
+        call HideFighter2
+        call movplayer2
+   jmp ExecuteToPlayerRole_theEnd
+   
+   
+   
+   
+    
+ExecuteToPlayerRole_theEnd:       
+ret     
+ExecuteToPlayerRole endp    
+
+
+
+
+
+
+
+
+;//////////////////////////
+ get_recieve_name proc  
+    pusha
+ 
+ 
+ ;cmp playerRole ,0
+ ;jnz get_recieve_name_player2     
+ 	;sending and reciveing one by one
+    mov cl,player1name[1] 
+    mov byte,cl
+    send byte  
+
+	recive byte  ;first recive name length
+    mov ch,byte 
+	 
+    mov bx,offset player1name+2
+	mov si,offset player2Name+2
+    ExchangeNames:	
+		cmp cl,00h
+		jz no_more_send
+			mov al,[bx]
+			mov byte,al
+			send byte
+			inc bx
+			dec cl
+		no_more_send:
+		
+		cmp ch,00h
+		jz no_more_recive
+			recive byte
+			mov al,byte
+			mov [si],al
+			inc si
+			dec ch
+		no_more_recive:
+		cmp cx,0000h
+    jnz ExchangeNames
+   jmp get_recieve_name_end
+                            
+                            
+    ;cmp playerRole ,0
+;    jz get_recieve_name_end 
+;                          
+;    mov cx,0d 
+;    mov si ,offset player1name[2]
+;    mov bx ,offset player2name[2]
+;    get_recieve_name_lop:
+;    
+;    add si,cx
+;    add bx,cx
+;    
+;    mov al,[si]    
+;    mov ah,[bx]
+;    
+;    mov [si],ah
+;    mov [bx],al
+;              
+;    inc cx
+;              
+;    cmp cx,16d
+;    jnz get_recieve_name_lop
+; 
+ 
+ get_recieve_name_end:  
+                        
+popa                             
+ret   
+endp 
+
+
+
+
+
+
+
+
+
+
+
+;serial macros
+send macro byte ; sending with wating
+	local again
+	push ax
+	push dx
+	again:
+		mov dx,3fdh
+		in al,dx
+		and al,00100000b
+	jz again
+	mov al,byte
+	mov dx,3f8h
+	out dx,al
+	pop dx
+	pop ax
+endm send 
+;-----------------
+
+recive macro byte
+	local again
+	push ax
+	push dx
+	again:
+		mov dx,3fdh
+		in al,dx
+		and al,00000001b
+	jz again
+	mov dx,3f8h
+	in al,dx
+	mov byte,al
+	pop dx
+	pop ax
+endm send 
+
+
+
+
+
+ismovesEnd proc
+    
+    push cx 
+      
+     mov cl,fighter1moves
+     add cl,fighter2moves
+     
+     cmp cl,0
+           
+pop cx           
+ret    
+endp isGameEnd
+
+
+   
+   
+   
+printByte proc    ; input the number in ax onle 3digit number; cursor position in byte  
+    
+   
+   pusha
+   
+   mov bl,10d
+   
+  ;; mov al,010d
+  ;; mov ah,0d
+  
+   
+   mov cx,3
+   
+   printByte_div:
+   
+   div bl
+   
+   push ax
+   
+   mov ah,0
+   
+   loop printByte_div
+   
+   mov cx,3
+   
+   mov bl,byte 
+   
+   printByte_print:
+   
+    
+    movecursor bl,0d
+   
+      pop ax
+      
+      mov bh,ah
+     
+    printnumber bh 
+    
+    inc bl
+    
+   loop printByte_print
+    
+  popa
+  
+ ret    
+    
+endp 
+
+
+
+      
+      
+inimain proc 
+    
+  mov  gameDifficltuy , 1+3      ; init with default value to be seen first in the screen(increase this value to speedFactor)
+  mov speedFactor, 4d+3
+  mov BulletMode , 0     ;0:translation      ;1:bounding
+  mov level2,0       
+
+   
+  mov PlayerRole,3  ; 0:host, 1:client
+  mov Player2CurrReauest , 0 ; 0:no request, 1:request to play, 2:request to chat == 1:accept,2:refuse,3"requestPlay,4:requesChat
+
+
+ret    
+endp    
+
+   
+   
+   
+;exhgGameSettings proc
+;    
+;    
+;cmp playerrole,0  
+;jz  exhgGameSettings_1
+;jmp exhgGameSettings_2   
+;
+;
+;ret    
+;endp    
+;
+
+
+
+
+
+;************************************* chat **************************************************************
+chat proc
+pusha  
+     
+     mov temp1B,0
+     mov ah,0
+     mov al,3h
+     int 10h 
+     
+     call get_recieve_name
+     ;call initport
+     movecursor 0,12d
+     call drawLineTextMode
+     
+     movecursor 0,23d
+     call drawLineTextMode
+     
+     movecursor 0,24d
+     displaystring statusbar     
+     
+     movecursor 1,1
+     displaystring player1name[2]
+     
+     
+     movecursor 1,13d
+     displaystring player2name[2]
+     
+
+     chatLoop:
+        call updatescroll
+        
+        call isNotPressed
+        jnz printAndSend
+        jmp chkrecieve
+        
+        printAndSend:
+           call getchar
+           call sendchar
+           call printchar1
+           
+           
+        chkrecieve:
+        call isDataNotReady
+        jnz recAndPrint
+        cmp temp1B,ESCSc
+        jnz chatLoop    ;jnz
+        recAndPrint:   
+            call invalue
+            cmp al,ESCsc
+            jz chat_end 
+            call printchar2
+        
+     
+     cmp temp1B,ESCSc
+     jnz chatLoop    ;jnz
+     
+chat_end:
+chngeToVedioMode
+call inimain    
+popa    
+ret
+chat endp
+
+
+
+
+
+
+isNotPressed proc
+push ax    
+    mov ah,1
+    int 16h
+pop ax
+ret    
+isNotPressed endp    
+
+
+    
+    
+    
+
+; from al
+sendchar proc
+push ax        
+    sendchar_check:
+    call isTransmitterRegHoldData
+    jz sendchar_check
+    call outValue
+    
+pop ax    
+ret
+sendchar endp
+
+
+
+    
+
+
+getchar proc
+        
+    mov ah,0
+    int 16h
+    
+    cmp ah,ESCSc
+    jnz getchar_end
+    mov temp1B,ESCSc
+    mov al,ESCSc
+    
+getchar_end:    
+ret           
+getchar endp    
+
+
+
+    
+
+; from  al
+printchar1 proc
+push ax
+push dx
+push bx
+   
+   
+   movecursor cursor1[0],cursor1[1] 
+   mov ah,2
+   mov dl,al
+   int 21h
+   
+   ; get cursor position
+   mov ah,3h
+   mov bh,0h
+   int 10h
+   
+   mov cursor1[0],dl
+   mov cursor1[1],dh
+
+pop bx 
+pop dx
+pop ax    
+ret    
+printchar1 endp    
+
+
+
+
+; from  al
+printchar2 proc
+push ax
+push dx
+push bx
+   
+   movecursor cursor2[0],cursor2[1] 
+   mov ah,2
+   mov dl,al
+   int 21h
+   
+   mov ah,3h
+   mov bh,0h
+   int 10h
+   
+   mov cursor2[0],dl
+   mov cursor2[1],dh
+
+pop bx 
+pop dx
+pop ax    
+ret    
+printchar2 endp
+
+
+
+
+updatescroll proc
+pusha
+    mov al,cursor1[0]
+    mov ah,cursor1[1]    
+    cmp al,79d
+    jnz updatescroll_end1
+    cmp ah,11d      ;11d
+    jnz updatescroll_end1
+    
+    ; update scrolling
+    
+    
+    mov ah,06
+    mov al,01
+    mov bh,07
+    ;mov dx,184FH
+    mov cl,2
+    mov ch,2d
+    
+    ; D, max x, max y
+    mov dl,79d
+    mov dh,11d
+    int 10h
+    
+    mov cursor1[0],0
+    
+updatescroll_end1:
+    mov al,cursor2[0]
+    mov ah,cursor2[1]    
+    cmp al,79d
+    jnz updatescroll_end
+    cmp ah,22d   ;25d
+    jnz updatescroll_end
+    
+    ; update scrolling 2
+    mov ah,06
+    mov al,01
+    mov bh,07
+    ;mov dx,184FH
+    mov cl,2
+    mov ch,14d
+    
+    ; D, max x, max y
+    mov dl,79d
+    mov dh,22d
+    int 10h
+    
+    mov cursor2[0],0
+    
+updatescroll_end:    
+popa    
+ret    
+updatescroll endp    
+
+
+
+
+drawLineTextMode proc
+
+pushf
+push ax
+push bx
+push cx
+
+
+mov ah,9 ;Display
+mov bh,0 ;Page 0
+mov al,'_' ;Letter _
+
+
+mov cx,79d ;5 times
+mov bl,0Ah ;Green (A) on white(F) background
+int 10h
+
+
+
+
+pop cx
+pop bx
+pop ax
+popf
+ret
+drawLineTextMode endp
+
+;************************************************************ chat ***************************************
 end main

@@ -32,10 +32,15 @@ pop ax
 endm
 
 ;---------------------------------------
-; 
-getUserNameScreen  macro msgdisplayed1,msgdisplayed2,name
+getUserNameScreen  macro msgdisplayed1,msgdisplayed2,name,wrongname
 
-
+push ax
+local checkonletters
+local checkonupcase
+local error
+local begin
+local end
+begin:
 movecursor 8d,11d
 displaystring msgdisplayed1
 movecursor 8d,15d
@@ -43,34 +48,101 @@ displaystring msgdisplayed2
 movecursor 8d,13d
 readstring name
 
+mov ah,name[2]
+
+cmp ah,'a'
+jge checkonupcase
+jmp checkonletters
+
+checkonupcase:
+sub ah,32d
+
+checkonletters:
+mov al,'A'
+cmp al,ah
+jg error
+
+mov al,'Z'
+cmp al,ah
+jl error
+
+
+jmp end
+
+error:
+chngeToVedioMode
+movecursor 8d,17d
+displaystring wrongname
+jmp begin
+
+end:
 ;clear the screen
 chngeToVedioMode
 
+pop ax
 endm
 
 ;---------------------------------------------------------------
-mainScreen macro choice1,choice2,choice3,choiceDiff,diffNum,mesChoiceMode,BulletMode
 
-movecursor 8d,7d
+
+;---------------------------------------------------------------
+mainScreen macro choice1,choice2,choice3,choiceDiff,diffNum,mesChoiceMode,BulletMode,level2,level2msg
+
+movecursor 8d,2d
 displaystring choice1
-movecursor 8d,9d
+movecursor 8d,4d
 displaystring choice2
-movecursor 8d,11d
+movecursor 8d,6d
 displaystring choice3
 
 ;display the difficlty mes
-movecursor 2d,15d
+movecursor 2d,8d
 displaystring choiceDiff
 ;display the difficlty number
-movecursor 2d,16d
+movecursor 2d,9d
 printnumber diffNum
 
 ;display the Bullet mode mesage
-movecursor 2d,18d
+movecursor 2d,12d
 displaystring mesChoiceMode
 ;display the mode string depending on mode --> in the future
-movecursor 2d,19d
+movecursor 2d,13d
 printnumber BulletMode
+
+
+movecursor 2d,15d
+displaystring level2msg
+;display the mode string depending on mode --> in the future
+movecursor 2d,16d
+printnumber level2
+
+
+local endlabel
+local printPlay
+local printChat
+
+cmp Player2CurrReauest,requestPlay
+jz printPlay
+cmp Player2CurrReauest,requestChat
+jz printChat
+jmp endlabel
+
+
+
+printPlay:
+ movecursor 2d,19d
+ displaystring recGameinvationMs
+
+jmp endlabel
+
+
+printChat:
+ movecursor 2d,19d
+ displaystring recChatinvationMs
+
+jmp endlabel
+
+endlabel:
 
 endm
 ;-----------------------------------------
